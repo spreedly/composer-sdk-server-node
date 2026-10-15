@@ -3,27 +3,18 @@ const fs = require('fs')
 const Path = require('path')
 /* eslint-enable */
 
-const deleteFolderRecursive = (path) => {
-  if (fs.existsSync(path)) {
-    fs.readdirSync(path).forEach((file) => {
-      const curPath = Path.join(path, file)
-      if (fs.lstatSync(curPath).isDirectory()) {
-        deleteFolderRecursive(curPath)
-      } else {
-        fs.unlinkSync(curPath)
-      }
-    })
-    fs.rmdirSync(path)
-  }
-}
+const BUILD_FOLDERS = ['cjs', 'esm', 'umd', 'types']
 
 const folder = process.argv.slice(2)[0]
 
-if (folder) {
-  deleteFolderRecursive(Path.join(__dirname, '../dist', folder))
-} else {
-  deleteFolderRecursive(Path.join(__dirname, '../dist/cjs'))
-  deleteFolderRecursive(Path.join(__dirname, '../dist/esm'))
-  deleteFolderRecursive(Path.join(__dirname, '../dist/umd'))
-  deleteFolderRecursive(Path.join(__dirname, '../dist/types'))
+// Only the known build folders can be removed; anything else is rejected
+if (folder && !BUILD_FOLDERS.includes(folder)) {
+  console.error(`Invalid folder "${folder}". Expected one of: ${BUILD_FOLDERS.join(', ')}`)
+  process.exit(1)
 }
+
+const targets = folder ? [folder] : BUILD_FOLDERS
+
+targets.forEach((target) => {
+  fs.rmSync(Path.join(__dirname, '../dist', target), { recursive: true, force: true })
+})
