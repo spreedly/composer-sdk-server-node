@@ -1,0 +1,84 @@
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # For npm trusted publishing and provenance.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Trusted publishing needs npm 11.5.1 or later, which Node 24 includes.
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check tag matches package.json and CHANGELOG.md
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}"
+            exit 1
+          fi
+          awk -v v="${VERSION}" '/^## / { if (found) exit; if ($2 == v) { found = 1; next } } found' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "CHANGELOG.md has no '## ${VERSION}' section"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and test
+        run: npm test
+
+      # Publishing the packed tarball means the checksum below is of the exact
+      # file npm serves.
+      - name: Pack
+        run: |
+          npm pack
+          sha256sum *.tgz > SHA256SUMS
+          npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+
+      # npm only allows trusted publishing for a package that already exists, so
+      # the first release uses a short-lived NPM_TOKEN secret. Once trusted
+      # publishing is set up, the secret is deleted and npm uses OIDC.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./*.tgz --access public --provenance
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            *.tgz
+            SHA256SUMS
+            sbom.cdx.json
+            release-notes.md
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md ./*.tgz SHA256SUMS sbom.cdx.json
