@@ -24,11 +24,15 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Check tag matches package.json and CHANGELOG.md
+      - name: Check tag matches package.json, version.ts and CHANGELOG.md
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}"
+            exit 1
+          fi
+          if ! grep -qxF "export const VERSION = \"${VERSION}\";" src/version.ts; then
+            echo "src/version.ts does not match package.json version ${VERSION}"
             exit 1
           fi
           awk -v v="${VERSION}" '/^## / { if (found) exit; if ($2 == v) { found = 1; next } } found' CHANGELOG.md > release-notes.md
