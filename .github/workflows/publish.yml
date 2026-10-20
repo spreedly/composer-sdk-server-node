@@ -7,25 +7,35 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  # Runs all dependency code (install, build, tests) without id-token, so
+  # nothing here can request the OIDC token npm accepts for publishing.
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # For npm trusted publishing and provenance.
-      id-token: write
+    outputs:
+      name: ${{ steps.check.outputs.name }}
+      version: ${{ steps.check.outputs.version }}
+      tarball: ${{ steps.pack.outputs.tarball }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the main ancestry check can see main.
+          fetch-depth: 0
+          persist-credentials: false
 
-      # Trusted publishing needs npm 11.5.1 or later, which Node 24 includes.
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
-      - name: Check tag matches package.json, version.ts and CHANGELOG.md
+      - name: Check tag, version and CHANGELOG.md
+        id: check
         run: |
+          NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
           if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}"
@@ -35,11 +45,18 @@ jobs:
             echo "src/version.ts does not match package.json version ${VERSION}"
             exit 1
           fi
-          awk -v v="${VERSION}" '/^## / { if (found) exit; if ($2 == v) { found = 1; next } } found' CHANGELOG.md > release-notes.md
-          if [[ ! -s release-notes.md ]]; then
-            echo "CHANGELOG.md has no '## ${VERSION}' section"
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "Tagged commit ${GITHUB_SHA} is not on main"
             exit 1
           fi
+          HEADING="$(grep -m1 -E "^## ${VERSION//./\\.}( |$)" CHANGELOG.md || true)"
+          if [[ -z "${HEADING}" || "${HEADING,,}" == *unreleased* ]]; then
+            echo "CHANGELOG.md needs a released '## ${VERSION}' section"
+            exit 1
+          fi
+          awk -v v="${VERSION}" '/^## / { if (found) exit; if ($2 == v) { found = 1; next } } found' CHANGELOG.md > release-notes.md
+          echo "name=${NAME}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Install dependencies
         run: npm ci
@@ -47,21 +64,33 @@ jobs:
       - name: Build and test
         run: npm test
 
-      # Publishing the packed tarball means the checksum below is of the exact
-      # file npm serves.
-      - name: Pack
-        run: |
-          npm pack
-          sha256sum *.tgz > SHA256SUMS
-          npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
 
-      # npm only allows trusted publishing for a package that already exists, so
-      # the first release uses a short-lived NPM_TOKEN secret. Once trusted
-      # publishing is set up, the secret is deleted and npm uses OIDC.
-      - name: Publish to npm
+      - name: Pack
+        id: pack
+        run: |
+          TARBALL="$(npm pack)"
+          sha256sum "${TARBALL}" > SHA256SUMS
+          npm sbom --sbom-format cyclonedx --sbom-type library --omit dev > sbom.cdx.json
+          echo "tarball=${TARBALL}" >> "${GITHUB_OUTPUT}"
+
+      # Scans the files customers receive, including built dist/. The hash pins
+      # the download; --redact keeps a found secret's value out of the public
+      # log while --verbose still shows where it is.
+      - name: Scan tarball for secrets
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish ./*.tgz --access public --provenance
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          ARCHIVE="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
+          echo "${GITLEAKS_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          tar -xzf "${ARCHIVE}" gitleaks
+          mkdir "${RUNNER_TEMP}/package"
+          tar -xzf "${TARBALL}" -C "${RUNNER_TEMP}/package"
+          ./gitleaks dir "${RUNNER_TEMP}/package" --redact --verbose
 
       - uses: actions/upload-artifact@v4
         with:
@@ -72,8 +101,57 @@ jobs:
             sbom.cdx.json
             release-notes.md
 
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers and the v* tag rule live on this environment, and the
+    # npm trusted publisher is bound to it.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NAME: ${{ needs.build.outputs.name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      TARBALL: ${{ needs.build.outputs.tarball }}
+      NPM_STAGE_TOKEN: ${{ secrets.NPM_STAGE_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+
+      - name: Verify tarball checksum
+        run: sha256sum -c SHA256SUMS
+
+      # No registry-url: it writes an auth token placeholder to .npmrc, which
+      # turns a failed OIDC exchange into a misleading 404.
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check version is not already on npm
+        run: |
+          if EXISTING="$(npm view "${NAME}@${VERSION}" version 2> /dev/null)" && [[ -n "${EXISTING}" ]]; then
+            echo "${NAME}@${VERSION} is already on npm"
+            exit 1
+          fi
+
+      # npm only allows trusted publishing for a package that already exists,
+      # so the first release is staged with a stage-only token and approved by
+      # a maintainer with 2FA on npmjs.com.
+      - name: Stage first release
+        if: env.NPM_STAGE_TOKEN != ''
+        run: |
+          npm config set "//registry.npmjs.org/:_authToken=${NPM_STAGE_TOKEN}"
+          npm stage publish "./${TARBALL}" --provenance --access public
+
+      - name: Publish to npm
+        if: env.NPM_STAGE_TOKEN == ''
+        run: npm publish "./${TARBALL}" --provenance --access public
+
   release:
-    needs: publish
+    needs: [build, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,4 +163,5 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md ./*.tgz SHA256SUMS sbom.cdx.json
+          TARBALL: ${{ needs.build.outputs.tarball }}
+        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md "./${TARBALL}" SHA256SUMS sbom.cdx.json
