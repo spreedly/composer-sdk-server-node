@@ -110,6 +110,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      staged: ${{ steps.stage.outputs.staged }}
     env:
       NAME: ${{ needs.build.outputs.name }}
       VERSION: ${{ needs.build.outputs.version }}
@@ -141,10 +143,12 @@ jobs:
       # so the first release is staged with a stage-only token and approved by
       # a maintainer with 2FA on npmjs.com.
       - name: Stage first release
+        id: stage
         if: env.NPM_STAGE_TOKEN != ''
         run: |
           npm config set "//registry.npmjs.org/:_authToken=${NPM_STAGE_TOKEN}"
           npm stage publish "./${TARBALL}" --provenance --access public
+          echo "staged=true" >> "${GITHUB_OUTPUT}"
 
       - name: Publish to npm
         if: env.NPM_STAGE_TOKEN == ''
@@ -160,8 +164,11 @@ jobs:
         with:
           name: release
 
+      # A staged version isn't live until a maintainer approves it on npm, so
+      # its release stays a draft until then; publishing the draft locks it.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL: ${{ needs.build.outputs.tarball }}
-        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md "./${TARBALL}" SHA256SUMS sbom.cdx.json
+          DRAFT: ${{ needs.publish.outputs.staged == 'true' }}
+        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md --draft="${DRAFT}" "./${TARBALL}" SHA256SUMS sbom.cdx.json
