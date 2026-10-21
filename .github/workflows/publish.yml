@@ -126,11 +126,14 @@ jobs:
         run: sha256sum -c SHA256SUMS
 
       # No registry-url: it writes an auth token placeholder to .npmrc, which
-      # turns a failed OIDC exchange into a misleading 404.
+      # turns a failed OIDC exchange into a misleading 404. check-latest keeps
+      # an older cached Node from bringing an npm too old for stage publish
+      # and trusted publishing.
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          check-latest: true
 
       - name: Check version is not already on npm
         run: |
