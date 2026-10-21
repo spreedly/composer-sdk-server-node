@@ -67,7 +67,7 @@
     "@types/node-fetch": "^2.6.13",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
-    "@vitest/coverage-v8": "^4.1.5",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^10.0.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
@@ -75,7 +75,7 @@
     "prettier": "^3.8.1",
     "ts-loader": "^9.5.4",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.5",
+    "vitest": "^4.1.12",
     "webpack": "^5.105.2",
     "webpack-cli": "^6.0.1"
   },
