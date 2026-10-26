@@ -73,6 +73,8 @@ jobs:
           TARBALL="$(npm pack)"
           sha256sum "${TARBALL}" > SHA256SUMS
           npm sbom --sbom-format cyclonedx --sbom-type library --omit dev > sbom.cdx.json
+          # npm sbom names the root component after the checkout folder.
+          node -e "const fs = require('fs'); const b = JSON.parse(fs.readFileSync('sbom.cdx.json')); b.metadata.component.name = require('./package.json').name; fs.writeFileSync('sbom.cdx.json', JSON.stringify(b, null, 2) + '\n')"
           echo "tarball=${TARBALL}" >> "${GITHUB_OUTPUT}"
 
       # Scans the files customers receive, including built dist/. The hash pins
