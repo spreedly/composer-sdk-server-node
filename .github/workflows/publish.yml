@@ -73,6 +73,8 @@ jobs:
           TARBALL="$(npm pack)"
           sha256sum "${TARBALL}" > SHA256SUMS
           npm sbom --sbom-format cyclonedx --sbom-type library --omit dev > sbom.cdx.json
+          # npm sbom names the root component after the checkout folder.
+          node -e "const fs = require('fs'); const b = JSON.parse(fs.readFileSync('sbom.cdx.json')); b.metadata.component.name = require('./package.json').name; fs.writeFileSync('sbom.cdx.json', JSON.stringify(b, null, 2) + '\n')"
           echo "tarball=${TARBALL}" >> "${GITHUB_OUTPUT}"
 
       # Scans the files customers receive, including built dist/. The hash pins
@@ -110,13 +112,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    outputs:
-      staged: ${{ steps.stage.outputs.staged }}
     env:
       NAME: ${{ needs.build.outputs.name }}
       VERSION: ${{ needs.build.outputs.version }}
       TARBALL: ${{ needs.build.outputs.tarball }}
-      NPM_STAGE_TOKEN: ${{ secrets.NPM_STAGE_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -127,8 +126,8 @@ jobs:
 
       # No registry-url: it writes an auth token placeholder to .npmrc, which
       # turns a failed OIDC exchange into a misleading 404. check-latest keeps
-      # an older cached Node from bringing an npm too old for stage publish
-      # and trusted publishing.
+      # an older cached Node from bringing an npm too old for trusted
+      # publishing.
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
@@ -142,19 +141,7 @@ jobs:
             exit 1
           fi
 
-      # npm only allows trusted publishing for a package that already exists,
-      # so the first release is staged with a stage-only token and approved by
-      # a maintainer with 2FA on npmjs.com.
-      - name: Stage first release
-        id: stage
-        if: env.NPM_STAGE_TOKEN != ''
-        run: |
-          npm config set "//registry.npmjs.org/:_authToken=${NPM_STAGE_TOKEN}"
-          npm stage publish "./${TARBALL}" --provenance --access public
-          echo "staged=true" >> "${GITHUB_OUTPUT}"
-
       - name: Publish to npm
-        if: env.NPM_STAGE_TOKEN == ''
         run: npm publish "./${TARBALL}" --provenance --access public
 
   release:
@@ -167,11 +154,8 @@ jobs:
         with:
           name: release
 
-      # A staged version isn't live until a maintainer approves it on npm, so
-      # its release stays a draft until then; publishing the draft locks it.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL: ${{ needs.build.outputs.tarball }}
-          DRAFT: ${{ needs.publish.outputs.staged == 'true' }}
-        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md --draft="${DRAFT}" "./${TARBALL}" SHA256SUMS sbom.cdx.json
+        run: gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md "./${TARBALL}" SHA256SUMS sbom.cdx.json
