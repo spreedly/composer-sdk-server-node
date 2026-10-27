@@ -1,6 +1,6 @@
 {
   "name": "@spreedly/composer-sdk-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Composer Server SDK",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
