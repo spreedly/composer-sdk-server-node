@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 (2026-10-27)
+
+No changes to the SDK's code.
+
+### Changed
+- The README's Client SDK links point to `@spreedly/composer-sdk-client`.
+- The SBOM on the GitHub Release names its root component `@spreedly/composer-sdk-server`.
+
 ## 1.0.0 (2026-10-22)
 
 First release as `@spreedly/composer-sdk-server`. If you're upgrading from `@dodgeball/trust-sdk-server`, read **Changed** and **Removed**.
